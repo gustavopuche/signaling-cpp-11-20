@@ -1,0 +1,8 @@
+*.*
+!.gitattributes
+!.gitignore
+!readme.md
+!.gitkeep
+!*.cpp
+!*.h
+!CMakeLists.txt
