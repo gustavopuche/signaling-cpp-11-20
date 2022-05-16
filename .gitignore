@@ -5,4 +5,5 @@
 !.gitkeep
 !*.cpp
 !*.h
+!*.org
 !CMakeLists.txt

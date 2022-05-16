@@ -1,0 +1,8 @@
+* Signaling Exercises.
+  Implements a login service to play with threads and STL.
+
+** Basic Login System.
+   Simulates a basic login system.
+
+*** Problems
+    If a user does not read outbox global variable the system falls in starvation state.
