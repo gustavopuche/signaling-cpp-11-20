@@ -1,89 +1,140 @@
-#include <algorithm>
+#include <chrono>
 #include <iostream>
-#include <iterator>
+#include <mutex>
 #include <ostream>
+#include <queue>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
-#include <ranges>
-#include <concepts>
+
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+using std::chrono::system_clock;
 
 using namespace std;
 
-// // Range concept
-// template <BoundedRange R>
-// requires Sortable<R>
-// void sort(R &r) {
-//   return sort(begin(r),end(r));
-// }
+using Param = pair<string, string>;
 
-template <typename C>
-using Value_type = typename C::value_type; // the type of C's elements.
+enum class MessageType {
+  login,
+  credentials,
+  logout,
+  login_rec,
+  credentials_rec,
+  logout_rec};
 
-template <typename C>
-using Iterator_type = typename C::iterator; // C's iterator type.
-
-template <typename S>
-concept Sequence = requires(S a) {
-  typename Value_type<S>;                     // S must hava a value type
-  typename Iterator_type<S>;                  // S must hava an iterator type
-
-  { begin(a) } -> same_as<Iterator_type<S>>;           // begin(a) must return an iterator
-  { end(a) } -> same_as<Iterator_type<S>>;             // end(a) must return an iterator
-
-  requires same_as<Value_type<S>, Value_type<Iterator_type<S>>>;
-  requires input_iterator<Iterator_type<S>>;
-  requires integral<Value_type<S>>;           // only integral types allowed.
-};
-
-template <Sequence Seq, typename Num> Num sum(Seq s, Num v) {
-  for (const auto& x : s)
+ostream &operator<<(ostream &os, MessageType m) {
+  switch(m)
   {
-    v+=x;
+  case MessageType::login:
+    os<<"login";
+    break;
+  case MessageType::credentials:
+    os<<"credentials";
+    break;
+  case MessageType::logout:
+    os<<"logout";
+    break;
+  case MessageType::login_rec:
+    os<<"login_rec";
+    break;
+  case MessageType::credentials_rec:
+    os<<"credentials_rec";
+    break;
+  case MessageType::logout_rec:
+    os<<"logout_rec";
+    break;
+  default:
+    os<<"Invalid MessageType";
   }
-  return v;
-}
-
-// Print phone list.
-template<template<class> class C,class T>
-ostream &operator<<(ostream &os, const C<T> &c) {
-  os << "{ ";
-  for (const auto& x : c)
-  {
-    os << x << " ";
-  }
-  os << "}";
-
   return os;
 }
 
-template <typename N>
-concept Number = requires(N n) {
-  requires integral<N>;
+struct Message {
+  int           id;             // Id of the sender.
+  MessageType   type;           // Type of the message.
+  vector<Param> params;         // Vector of parameters.
 };
 
-template <typename R>
-concept Range = requires(R r) {
-  typename Value_type<R>;                     // S must hava a value type
-  typename Iterator_type<R>;                  // S must hava an iterator type
+mutex m_inbox;
+queue<Message> inbox;
 
-  { begin(r) } -> same_as<Iterator_type<R>>;           // begin(a) must return an iterator
-  { end(r) } -> same_as<Iterator_type<R>>;             // end(a) must return an iterator
+mutex m_outbox;
+Message outbox;
 
-  requires same_as<Value_type<R>, Value_type<Iterator_type<R>>>;
+////////////////////////////////////////////////////////////////////////////////
+/// Basic login thread class.
+///
+/// Handles login and logout service requests.
+/// A message queue called inbox is managed by m_inbox mutex.
+/// Message response is stored in outbox Message variable managed by
+/// m_outbox mutex.
+/// outbox is clear when id is equal to -1.
+////////////////////////////////////////////////////////////////////////////////
+class Signaler {
+public:
+  void operator()(){
+    cout << "Starting Signaler..." << endl;
+    while(true)
+    {
+      GetSignal();
+      this_thread::sleep_for(seconds{1});
+    }
+
+  }
+private:
+  void GetSignal();
+  void AnswareLogin();
+  void AnswareCredentials();
+  void AnswareLogout();
 };
 
-template <Range R, Number Val> // Range concept if defined up.
-Val accumulate(const R &r, Val res = 0) {
-  for (auto p= begin(r); p!=end(r); ++p)
-    res += *p;
-  return res;
+void Signaler::GetSignal() {
+  cout << "Signaler::GetSignal..." << endl;
+  if (!inbox.empty())
+  {
+    scoped_lock lck{m_inbox};
+    Message m = inbox.front();
+    cout << "Signal read id: " << m.id << " type: " << m.type << endl;
+    inbox.pop();
+  }
 }
 
-template <Range R, Number Val, typename F> // Range concept if defined up.
-Val accumulate(const R &r, Val res, F fn) {
-  for (auto p= begin(r); p!=end(r); ++p)
-    res = fn(res,*p);
-  return res;
+////////////////////////////////////////////////////////////////////////////////
+/// Custom user thread class.
+///
+/// Asks Signaler for login, credentials and logout.
+/// When User reads Signaler response puts outbox.id to -1.
+////////////////////////////////////////////////////////////////////////////////
+class User {
+public:
+  User(int id, string name) : id(id), name(name){}
+
+  void operator()(){
+    cout << "Starting User id: " << id << " name: " << name << endl;
+    SendLogin();
+  }
+private:
+  int    id;                    // Id of the user.
+  string name;                  // Name of the user.
+
+  void SendLogin();
+  void SendCredentials();
+  void SendLogout();
+
+  bool GetAnsware(MessageType type);
+};
+
+void User::SendLogin() {
+  Message m;
+  m.id = id;
+  m.type = MessageType::login;
+  scoped_lock lck{m_inbox}; // acquire inbox mutex.
+  cout << "User id: " << id << " name: " << name << " sends login." << endl;
+  inbox.push(m);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -93,29 +144,15 @@ Val accumulate(const R &r, Val res, F fn) {
 ////////////////////////////////////////////////////////////////////////////////
 int main()
 {
-  vector<int> v{22,14,6,18,10};
-  // list<double> l{0.5,0.7,1.4,1.7,1.8,2.3};
-  // set<string> s{"Gustavo"," is programming"," hard ","in ","c++20"};
+  thread login_signaler{Signaler{}};
+  thread th_user1{User{1,"User1"}};
+  thread th_user2{User{2,"User2"}};
+  thread th_user3{User{3,"User3"}};
 
-  ranges::sort(v); // sort using ranges in c++20.
-  cout << "Sorted vector = " << v << endl;
-
-  cout << "Accumulate of v is " << accumulate(v,0) << endl;
-
-  cout << "Multiplicative of v is " << accumulate(v,1,[](int res, int op){return res*op;}) << endl;
-
-  string line = "Gustavo is programming hard in c++20"s;
-  auto letter = line[10];
-
-  string ini="";
-
-  int number = 0;
-  double num_float = 0.0;
-
-  cout << "Sum of vector is " << sum(v,number) << endl;
-  // cout << "Sum of list is " << sum(l,num_float) << endl;
-  // cout << "Sum of set is " << sum(s,ini) << endl;
-  cout << "Sum of string is " << sum(line,letter) << endl;
+  login_signaler.join();
+  th_user1.join();
+  th_user2.join();
+  th_user3.join();
 
   return 0;
 }
