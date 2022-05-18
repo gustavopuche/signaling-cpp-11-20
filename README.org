@@ -5,4 +5,11 @@
    Simulates a basic login system.
 
 *** Problems
-    If a user does not read outbox global variable the system falls in starvation state.
+    - If a user does not read outbox global variable the system falls in starvation state.
+    - Mutexes and inbox and outbox variables are global, stored in text.
+** Basic Login improved.
+   Simulates a basic login improved.
+
+*** Fixes
+   - Starvation problem when reading outbox.
+   - Mutexes, inbox and outbox variables are local, stored in stack.
