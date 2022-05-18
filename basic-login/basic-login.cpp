@@ -76,9 +76,11 @@ Message outbox;
 ////////////////////////////////////////////////////////////////////////////////
 class Signaler {
 public:
+  Signaler(int n) : stop_after_logout_count(n) {}
   void operator()(){
-    cout << "Starting Signaler..." << endl;
-    while(true)
+    cout << "Starting Signaler with logout count "
+         << stop_after_logout_count << endl;
+    while(stop_after_logout_count > 0)
     {
       GetSignal();
       this_thread::sleep_for(seconds{1});
@@ -86,6 +88,8 @@ public:
 
   }
 private:
+  int stop_after_logout_count;
+
   void GetSignal();
   void AnswareLogin(Message& m);
   void AnswareCredentials(Message& m);
@@ -120,7 +124,7 @@ void Signaler::GetSignal() {
 void Signaler::AnswareLogin(Message &m) {
   while (outbox.id != -1)
   {
-    cout << "Signaler is waiting outbox is read in AnswareLogin"
+    cout << "Signaler is waiting outbox is read in AnswareLogin" << endl;
     this_thread::sleep_for(milliseconds{20});
   }
   scoped_lock lck{m_outbox};
@@ -131,7 +135,7 @@ void Signaler::AnswareLogin(Message &m) {
 void Signaler::AnswareCredentials(Message &m) {
   while (outbox.id != -1)
   {
-    cout << "Signaler is waiting outbox is read in AnswareCredentials"
+    cout << "Signaler is waiting outbox is read in AnswareCredentials" << endl;
     this_thread::sleep_for(milliseconds{20});
   }
   scoped_lock lck{m_outbox};
@@ -142,12 +146,14 @@ void Signaler::AnswareCredentials(Message &m) {
 void Signaler::AnswareLogout(Message &m) {
   while (outbox.id != -1)
   {
-    cout << "Signaler is waiting outbox is read in AnswareLogout"
+    cout << "Signaler is waiting outbox is read in AnswareLogout" << endl;
     this_thread::sleep_for(milliseconds{20});
   }
   scoped_lock lck{m_outbox};
   outbox.id = m.id;
   outbox.type = MessageType::logout_rec;
+  stop_after_logout_count--; // Decrement logout cont to stop execution.
+  cout << "Logout count " << stop_after_logout_count << endl;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -197,7 +203,8 @@ void User::SendCredentials() {
   m.params.push_back(Param{"user",name});
   m.params.push_back(Param{"password",name+"_passwd"});
   scoped_lock lck{m_inbox}; // acquire inbox mutex.
-  cout << "User id: " << id << " name: " << name << " sends credentials." << endl;
+  cout << "User id: " << id << " name: " << name
+       << " sends credentials." << endl;
   inbox.push(m);
 }
 
@@ -211,10 +218,11 @@ void User::SendLogout() {
 }
 
 bool User::GetAnsware() {
-  scoped_lock lck{m_inbox}
-  if (inbox.id == id)
+  scoped_lock lck{m_inbox};
+  if(outbox.id == id)
   {
-    inbox.id = -1;
+    outbox.id = -1;
+    cout << "Get answare id: " << id << " name: " << name << endl;
     return true;
   }
 
@@ -235,15 +243,23 @@ void User::Get() {
 ////////////////////////////////////////////////////////////////////////////////
 int main()
 {
-  thread login_signaler{Signaler{}};
-  thread th_user1{User{1,"User1"}};
-  thread th_user2{User{2,"User2"}};
-  thread th_user3{User{3,"User3"}};
+  outbox.id = -1; // Initialize outbox to empty.
+
+  int n = 10;
+  thread login_signaler{Signaler{n}};
+
+  vector<thread> vth;
+  for (int i = 1; i <= 10; i++)
+  {
+    vth.push_back(thread{User{i,"User"+to_string(i)}});
+  }
 
   login_signaler.join();
-  th_user1.join();
-  th_user2.join();
-  th_user3.join();
+
+  for (int i = 0; i < 10; i++)
+  {
+    vth[i].join();
+  }
 
   return 0;
 }
