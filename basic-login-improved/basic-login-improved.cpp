@@ -59,12 +59,78 @@ struct Message {
   vector<Param> params;         // Vector of parameters.
 };
 
-mutex m_inbox;
-queue<Message> inbox;
 
-mutex m_outbox;
-Message outbox;
+enum class BoxType {inbox,outbox}; // Type of message destination.
 
+////////////////////////////////////////////////////////////////////////////////
+/// Basic communicate class.
+///
+/// Manage access to inbox and outbox using mutexes.
+/// Implements interface send/receive.
+////////////////////////////////////////////////////////////////////////////////
+class Communicator {
+public:
+  void Send(Message m); // Sends message to inbox or outbox.
+  Message Pop(); // Pops inbox.
+  bool Receive(Message m); // Returns true if message is received in outbox.
+private:
+  mutex m_inbox;
+  mutex m_outbox;
+
+  queue<Message> inbox;
+  Message outbox;
+
+  void SendInBox(Message m); // Sends message to inbox.
+  void SendOutBox(Message m); // Sends message to outbox.
+};
+
+Message Communicator::Pop() {
+  Message m;
+  m.id = -1;
+  scoped_lock lck{m_inbox};
+  if (inbox.empty())
+  {
+    return m;
+  }
+  else
+  {
+    return inbox.front();
+  }
+}
+
+void Communicator::Send(Message m) {
+  switch(m.type)
+  {
+  case MessageType::login:
+  case MessageType::credentials:
+  case MessageType::logout:
+    SendInbox(m);
+    break;
+  case MessageType::login_rec:
+  case MessageType::credentials_rec:
+  case MessageType::logout_rec:
+    SendOutbox(m);
+    break;
+  default:
+    cerr << "Message type unrecognized... << " << endl;
+  }
+}
+
+void Communicator::SendInbox(Message m) {
+  scoped_lock lck{m_inbox};
+  inbox.push(m);
+}
+
+void Communicator::SendOutbox(Message m) {
+  while (outbox.id != -1)
+  {
+    this_thread::sleep_for(milliseconds{20});
+  }
+  scoped_lock lck{m_outbox}; // Error. Perhaps another thread have changed outbox.
+  outbox.id = m.id;
+  outbox.type = m.type;
+
+}
 ////////////////////////////////////////////////////////////////////////////////
 /// Basic login thread class.
 ///
