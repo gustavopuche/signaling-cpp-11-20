@@ -1,5 +1,6 @@
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <ostream>
 #include <queue>
@@ -26,7 +27,7 @@ enum class MessageType {
   credentials_rec,
   logout_rec};
 
-ostream &operator<<(ostream &os, MessageType m) {
+ostream &operator<<(ostream &os, MessageType& m) {
   switch(m)
   {
   case MessageType::login:
@@ -70,9 +71,12 @@ enum class BoxType {inbox,outbox}; // Type of message destination.
 ////////////////////////////////////////////////////////////////////////////////
 class Communicator {
 public:
-  void Send(Message m); // Sends message to inbox or outbox.
-  Message Pop(); // Pops inbox.
-  bool Receive(Message m); // Returns true if message is received in outbox.
+  Communicator() {
+    outbox.id = -1; // Initialize outbox to empty.
+  }
+  void    Send(Message& m);      // Sends message to inbox or outbox.
+  Message Pop();                // Pops inbox.
+  Message Receive(int dest_id); // Gets message to a destiantion id.
 private:
   mutex m_inbox;
   mutex m_outbox;
@@ -80,8 +84,8 @@ private:
   queue<Message> inbox;
   Message outbox;
 
-  void SendInBox(Message m); // Sends message to inbox.
-  void SendOutBox(Message m); // Sends message to outbox.
+  void SendInbox(Message& m);    // Sends message to inbox.
+  bool SendOutbox(Message& m);   // Sends message to outbox.
 };
 
 Message Communicator::Pop() {
@@ -94,11 +98,13 @@ Message Communicator::Pop() {
   }
   else
   {
-    return inbox.front();
+    m = inbox.front();
+    inbox.pop();
+    return m;
   }
 }
 
-void Communicator::Send(Message m) {
+void Communicator::Send(Message& m) {
   switch(m.type)
   {
   case MessageType::login:
@@ -109,27 +115,43 @@ void Communicator::Send(Message m) {
   case MessageType::login_rec:
   case MessageType::credentials_rec:
   case MessageType::logout_rec:
-    SendOutbox(m);
+    while(!SendOutbox(m))
+      this_thread::sleep_for(milliseconds{20});
     break;
   default:
     cerr << "Message type unrecognized... << " << endl;
   }
 }
 
-void Communicator::SendInbox(Message m) {
+void Communicator::SendInbox(Message& m) {
   scoped_lock lck{m_inbox};
   inbox.push(m);
 }
 
-void Communicator::SendOutbox(Message m) {
-  while (outbox.id != -1)
-  {
-    this_thread::sleep_for(milliseconds{20});
-  }
-  scoped_lock lck{m_outbox}; // Error. Perhaps another thread have changed outbox.
-  outbox.id = m.id;
-  outbox.type = m.type;
+bool Communicator::SendOutbox(Message& m) {
+  scoped_lock lck{m_outbox};
+  if (outbox.id != -1) // Fixed error: Other thread have changed outbox.
+    return false;
 
+  outbox.id     = m.id;
+  outbox.type   = m.type;
+  outbox.params = m.params;
+
+  return true;
+}
+
+Message Communicator::Receive(int dest_id) {
+  scoped_lock lck{m_outbox};
+  if (outbox.id == dest_id)
+  {
+    Message m = outbox;
+    outbox.id = -1; // Setup outbox slot as clear, ready to store new message.
+    return m;
+  }
+
+  Message m;
+  m.id = -1; // The reply Message has not been received yet.
+  return m;
 }
 ////////////////////////////////////////////////////////////////////////////////
 /// Basic login thread class.
@@ -142,35 +164,40 @@ void Communicator::SendOutbox(Message m) {
 ////////////////////////////////////////////////////////////////////////////////
 class Signaler {
 public:
-  Signaler(int n) : stop_after_logout_count(n) {}
+  Signaler(int n,shared_ptr<Communicator> com)
+    : stop_after_logout_count(n),
+      com(com) {}
   void operator()(){
     cout << "Starting Signaler with logout count "
          << stop_after_logout_count << endl;
+
     while(stop_after_logout_count > 0)
     {
-      GetSignal();
-      this_thread::sleep_for(seconds{1});
+      Answare(Get());
+      // this_thread::sleep_for(milliseconds{20});
     }
 
   }
 private:
+  shared_ptr<Communicator> com;
   int stop_after_logout_count;
+  Message mess;
 
-  void GetSignal();
+  Message& Get();
+  void Answare(Message& m);
   void AnswareLogin(Message& m);
   void AnswareCredentials(Message& m);
   void AnswareLogout(Message& m);
 };
 
-void Signaler::GetSignal() {
-  cout << "Signaler::GetSignal..." << endl;
-  if (!inbox.empty())
-  {
-    scoped_lock lck{m_inbox};
-    Message m = inbox.front();
-    cout << "Signal read id: " << m.id << " type: " << m.type << endl;
+Message& Signaler::Get() {
+  mess = com->Pop();
+  cout << "Signaler::GetSignal from id: " << mess.id << endl;
+  return mess;
+}
 
-    // WARNING: inside a lock we are getting another lock.
+void Signaler::Answare(Message &m) {
+  if (m.id != -1)
     switch(m.type)
     {
     case MessageType::login:
@@ -183,42 +210,22 @@ void Signaler::GetSignal() {
       AnswareLogout(m);
       break;
     }
-    inbox.pop();
-  }
 }
 
 void Signaler::AnswareLogin(Message &m) {
-  while (outbox.id != -1)
-  {
-    cout << "Signaler is waiting outbox is read in AnswareLogin" << endl;
-    this_thread::sleep_for(milliseconds{20});
-  }
-  scoped_lock lck{m_outbox};
-  outbox.id = m.id;
-  outbox.type = MessageType::login_rec;
+  m.type = MessageType::login_rec;
+  com->Send(m);
 }
 
 void Signaler::AnswareCredentials(Message &m) {
-  while (outbox.id != -1)
-  {
-    cout << "Signaler is waiting outbox is read in AnswareCredentials" << endl;
-    this_thread::sleep_for(milliseconds{20});
-  }
-  scoped_lock lck{m_outbox};
-  outbox.id = m.id;
-  outbox.type = MessageType::credentials_rec;
+  m.type = MessageType::credentials_rec;
+  com->Send(m);
 }
 
 void Signaler::AnswareLogout(Message &m) {
-  while (outbox.id != -1)
-  {
-    cout << "Signaler is waiting outbox is read in AnswareLogout" << endl;
-    this_thread::sleep_for(milliseconds{20});
-  }
-  scoped_lock lck{m_outbox};
-  outbox.id = m.id;
-  outbox.type = MessageType::logout_rec;
-  stop_after_logout_count--; // Decrement logout cont to stop execution.
+  m.type = MessageType::logout_rec;
+  com->Send(m);
+  stop_after_logout_count--;
   cout << "Logout count " << stop_after_logout_count << endl;
 }
 
@@ -230,7 +237,10 @@ void Signaler::AnswareLogout(Message &m) {
 ////////////////////////////////////////////////////////////////////////////////
 class User {
 public:
-  User(int id, string name) : id(id), name(name){}
+  User(int id, string name,shared_ptr<Communicator> com)
+    : id(id),
+      name(name),
+      com(com) {}
 
   void operator()(){
     cout << "Starting User id: " << id << " name: " << name << endl;
@@ -244,6 +254,7 @@ public:
 private:
   int    id;                    // Id of the user.
   string name;                  // Name of the user.
+  shared_ptr<Communicator> com; // Communicator object.
 
   void SendLogin();
   void SendCredentials();
@@ -257,9 +268,8 @@ void User::SendLogin() {
   Message m;
   m.id = id;
   m.type = MessageType::login;
-  scoped_lock lck{m_inbox}; // acquire inbox mutex.
   cout << "User id: " << id << " name: " << name << " sends login." << endl;
-  inbox.push(m);
+  com->Send(m);
 }
 
 void User::SendCredentials() {
@@ -268,26 +278,22 @@ void User::SendCredentials() {
   m.type = MessageType::credentials;
   m.params.push_back(Param{"user",name});
   m.params.push_back(Param{"password",name+"_passwd"});
-  scoped_lock lck{m_inbox}; // acquire inbox mutex.
   cout << "User id: " << id << " name: " << name
        << " sends credentials." << endl;
-  inbox.push(m);
+  com->Send(m);
 }
 
 void User::SendLogout() {
   Message m;
   m.id = id;
   m.type = MessageType::logout;
-  scoped_lock lck{m_inbox}; // acquire inbox mutex.
   cout << "User id: " << id << " name: " << name << " sends logout." << endl;
-  inbox.push(m);
+  com->Send(m);
 }
 
 bool User::GetAnsware() {
-  scoped_lock lck{m_inbox};
-  if(outbox.id == id)
+  if(com->Receive(id).id == id)
   {
-    outbox.id = -1;
     cout << "Get answare id: " << id << " name: " << name << endl;
     return true;
   }
@@ -309,20 +315,20 @@ void User::Get() {
 ////////////////////////////////////////////////////////////////////////////////
 int main()
 {
-  outbox.id = -1; // Initialize outbox to empty.
+  shared_ptr c = make_shared<Communicator>();
 
   int n = 10;
-  thread login_signaler{Signaler{n}};
+  thread login_signaler{Signaler{n,c}};
 
   vector<thread> vth;
-  for (int i = 1; i <= 10; i++)
+  for (int i = 1; i <= n; i++)
   {
-    vth.push_back(thread{User{i,"User"+to_string(i)}});
+    vth.push_back(thread{User{i,"User"+to_string(i),c}});
   }
 
   login_signaler.join();
 
-  for (int i = 0; i < 10; i++)
+  for (int i = 0; i < n; i++)
   {
     vth[i].join();
   }
