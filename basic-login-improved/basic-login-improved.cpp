@@ -87,13 +87,17 @@ private:
   queue<Message> inbox;         // Incomming messages into queue.
   Message        outbox;        // Outcomming message variable.
 
-  void SendInbox(Message& m);    // Sends message to inbox.
-  bool SendOutbox(Message& m);   // Sends message to outbox.
+  void SendInbox(Message& m);   // Sends message to inbox.
+  bool SendOutbox(Message& m);  // Sends message to outbox.
 };
 
 Message Communicator::Pop() {
   unique_lock lck{m_inbox};
-  m_cond.wait(lck, [this](){ return !inbox.empty(); });
+  m_cond.wait(lck,
+              [this](){return !inbox.empty();}); // release lck and wait
+                                                 // re-acquire lck upon wakeup
+                                                 // don't wak up unless inbox
+                                                 // is non-empty
 
   auto m = inbox.front();
   inbox.pop();
