@@ -1,9 +1,11 @@
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <ostream>
 #include <queue>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -74,34 +76,29 @@ public:
   Communicator() {
     outbox.id = -1; // Initialize outbox to empty.
   }
-  void    Send(Message& m);      // Sends message to inbox or outbox.
+  void    Send(Message& m);     // Sends message to inbox or outbox.
   Message Pop();                // Pops inbox.
   Message Receive(int dest_id); // Gets message to a destiantion id.
 private:
-  mutex m_inbox;
-  mutex m_outbox;
+  mutex              m_inbox;   // Mutex for inbox.
+  shared_mutex       m_outbox;  // Read operations not blocked unless write.
+  condition_variable m_cond;    // the variable communicating events.
 
-  queue<Message> inbox;
-  Message outbox;
+  queue<Message> inbox;         // Incomming messages into queue.
+  Message        outbox;        // Outcomming message variable.
 
   void SendInbox(Message& m);    // Sends message to inbox.
   bool SendOutbox(Message& m);   // Sends message to outbox.
 };
 
 Message Communicator::Pop() {
-  Message m;
-  m.id = -1;
-  scoped_lock lck{m_inbox};
-  if (inbox.empty())
-  {
-    return m;
-  }
-  else
-  {
-    m = inbox.front();
-    inbox.pop();
-    return m;
-  }
+  unique_lock lck{m_inbox};
+  m_cond.wait(lck, [this](){ return !inbox.empty(); });
+
+  auto m = inbox.front();
+  inbox.pop();
+
+  return m;
 }
 
 void Communicator::Send(Message& m) {
@@ -124,12 +121,12 @@ void Communicator::Send(Message& m) {
 }
 
 void Communicator::SendInbox(Message& m) {
-  scoped_lock lck{m_inbox};
+  unique_lock lck{m_inbox};
   inbox.push(m);
 }
 
 bool Communicator::SendOutbox(Message& m) {
-  scoped_lock lck{m_outbox};
+  unique_lock lck{m_outbox};
   if (outbox.id != -1) // Fixed error: Other thread have changed outbox.
     return false;
 
@@ -141,16 +138,19 @@ bool Communicator::SendOutbox(Message& m) {
 }
 
 Message Communicator::Receive(int dest_id) {
-  scoped_lock lck{m_outbox};
-  if (outbox.id == dest_id)
+  shared_lock s_lck{m_outbox};
+  if (outbox.id != dest_id)
   {
-    Message m = outbox;
-    outbox.id = -1; // Setup outbox slot as clear, ready to store new message.
+    Message m;
+    m.id = -1; // The reply Message has not been received yet.
     return m;
   }
 
-  Message m;
-  m.id = -1; // The reply Message has not been received yet.
+  s_lck.unlock(); // Needed to avoid a deadlock getting 2 locks to same mutex.
+
+  unique_lock u_lck{m_outbox};
+  Message m = outbox;
+  outbox.id = -1; // Setup outbox slot as clear, ready to store new message.
   return m;
 }
 ////////////////////////////////////////////////////////////////////////////////
@@ -197,19 +197,18 @@ Message& Signaler::Get() {
 }
 
 void Signaler::Answare(Message &m) {
-  if (m.id != -1)
-    switch(m.type)
-    {
-    case MessageType::login:
-      AnswareLogin(m);
-      break;
-    case MessageType::credentials:
-      AnswareCredentials(m);
-      break;
-    case MessageType::logout:
-      AnswareLogout(m);
-      break;
-    }
+  switch(m.type)
+  {
+  case MessageType::login:
+    AnswareLogin(m);
+    break;
+  case MessageType::credentials:
+    AnswareCredentials(m);
+    break;
+  case MessageType::logout:
+    AnswareLogout(m);
+    break;
+  }
 }
 
 void Signaler::AnswareLogin(Message &m) {
