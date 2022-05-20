@@ -95,7 +95,7 @@ Message Communicator::Pop() {
   unique_lock lck{m_inbox};
   m_cond.wait(lck,
               [this](){return !inbox.empty();}); // release lck and wait
-                                                 // re-acquire lck upon wakeup
+                                                 // re-acquire lck upon wake up
                                                  // don't wak up unless inbox
                                                  // is non-empty
 
